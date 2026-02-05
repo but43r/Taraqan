@@ -1,41 +1,16 @@
-# Sensitive File Patterns for SMB Share Scanner
-# One pattern per line, supports glob wildcards (* and ?)
-# Lines starting with # are comments
+# Taraqan - Sensitive File Patterns
+# Focused patterns to avoid system file noise
 
-# ============================================
-# Password and credential files
-# ============================================
+# Password/credential files
 *password*
 *passwd*
 *credential*
 *secret*
-*login*
+*cred*.txt
+*pass*.txt
 
-# ============================================
-# Configuration files
-# ============================================
-web.config
-app.config
-*.ini
-*.conf
-*.cfg
-appsettings.json
-config.json
-
-# ============================================
-# Database files
-# ============================================
-*.sql
-*.sqlite
-*.db
-*.mdb
-
-# ============================================
-# Keys and certificates
-# ============================================
+# Key stores (high value)
 *.kdbx
-*.key
-*.pem
 *.pfx
 *.p12
 id_rsa
@@ -43,51 +18,33 @@ id_dsa
 id_ecdsa
 id_ed25519
 *.ppk
+*.pem
 
-# ============================================
-# Scripts (may contain hardcoded creds)
-# ============================================
-*.bat
-*.ps1
-*.vbs
-
-# ============================================
-# Remote desktop
-# ============================================
+# Remote access
 *.rdp
 *.rdg
+ultravnc.ini
+*.pcf
 
-# ============================================
-# Backup files
-# ============================================
-*.bak
-*.backup
-*.old
-
-# ============================================
-# Cloud credentials
-# ============================================
+# Cloud/environment
 credentials
 .env
 *.env
 
-# ============================================
-# Windows GPO sensitive files
-# ============================================
+# Windows GPO
 unattend.xml
+unattend.inf
 sysprep.xml
 groups.xml
 
-# ============================================
-# VNC and remote access
-# ============================================
-*.vnc
-ultravnc.ini
-*.pcf
+# Specific configs (not generic *.ini)
+web.config
+app.config
+appsettings.json
+config.json
+wp-config.php
 
-# ============================================
-# Russian language patterns
-# ============================================
+# Russian patterns
 *пароль*
 *парол*
 *учетк*
@@ -96,27 +53,9 @@ ultravnc.ini
 *секрет*
 *ключ*
 *креды*
-*доступ*
-*авториз*
-*пароли*.xlsx
-*учетки*.xlsx
-*пароли*.docx
-*учетки*.docx
-*пароли*.txt
-*учетки*.txt
 
-# ============================================
-# CIS/Kazakh environment patterns
-# ============================================
+# CIS environment
 *ЭЦП*
 *VPN*
 *vpn*
 *ip адрес*
-*hosts*
-*удаленк*
-*сертификат*
-*backup*
-*бэкап*
-*бекап*
-*конфиг*
-*настройк*

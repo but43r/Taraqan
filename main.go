@@ -207,6 +207,24 @@ func checkPort(host string, port int, timeout time.Duration) bool {
 	return true
 }
 
+// uniqueFilePath returns a unique file path by adding _1, _2, etc. suffix if file exists
+func uniqueFilePath(path string) string {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return path
+	}
+
+	ext := filepath.Ext(path)
+	base := strings.TrimSuffix(path, ext)
+
+	for i := 1; i < 1000; i++ {
+		newPath := fmt.Sprintf("%s_%d%s", base, i, ext)
+		if _, err := os.Stat(newPath); os.IsNotExist(err) {
+			return newPath
+		}
+	}
+	return path
+}
+
 // downloadFile downloads a file from SMB share with buffered I/O
 func downloadFile(shareFS *smb2.Share, remotePath, localPath string, maxSize int64) error {
 	remoteFile, err := shareFS.Open(remotePath)
@@ -341,7 +359,7 @@ func scanShare(ctx context.Context, session *smb2.Session, host, shareName strin
 
 			// Download file if enabled
 			if config.Download && size <= config.MaxDownloadSize && size > 0 {
-				localPath := filepath.Join(config.DownloadDir, host, filename)
+				localPath := uniqueFilePath(filepath.Join(config.DownloadDir, host, filename))
 				dlErr := downloadFile(shareFS, path, localPath, config.MaxDownloadSize)
 				if dlErr != nil {
 					if config.Verbose {
@@ -644,6 +662,8 @@ func runScan(targets []string, config *ScanConfig) []ScanResult {
 	sem := make(chan struct{}, config.Threads)
 	total := len(targets)
 	var done int64
+	var accessible int64
+	var totalMatches int64
 
 	for _, target := range targets {
 		wg.Add(1)
@@ -659,16 +679,19 @@ func runScan(targets []string, config *ScanConfig) []ScanResult {
 			results = append(results, result)
 			current := atomic.AddInt64(&done, 1)
 
+			if result.Accessible {
+				atomic.AddInt64(&accessible, 1)
+			}
+			atomic.AddInt64(&totalMatches, int64(len(result.Matches)))
+
 			if !config.Verbose {
-				status := "✗"
-				if result.Accessible {
-					status = "✓"
-				}
-				matchInfo := ""
-				if len(result.Matches) > 0 {
-					matchInfo = fmt.Sprintf(" [%d matches]", len(result.Matches))
-				}
-				fmt.Printf("\r[%d/%d] %s %s%s          ", current, total, t, status, matchInfo)
+				// Clear line and print progress
+				pct := float64(current) / float64(total) * 100
+				bar := progressBar(int(pct), 20)
+				fmt.Printf("\r\033[K[%s] %5.1f%% (%d/%d) | Accessible: %d | Matches: %d",
+					bar, pct, current, total,
+					atomic.LoadInt64(&accessible),
+					atomic.LoadInt64(&totalMatches))
 			}
 			mu.Unlock()
 		}(target)
@@ -681,6 +704,16 @@ func runScan(targets []string, config *ScanConfig) []ScanResult {
 	}
 
 	return results
+}
+
+// progressBar creates a simple progress bar string
+func progressBar(pct, width int) string {
+	filled := pct * width / 100
+	if filled > width {
+		filled = width
+	}
+	bar := strings.Repeat("█", filled) + strings.Repeat("░", width-filled)
+	return bar
 }
 
 // ============================================================================
