@@ -1,0 +1,29 @@
+# Binaries
+taraqan
+taraqan.exe
+*.exe
+*.dll
+
+# Build
+/bin/
+/dist/
+
+# Output directories
+/loot/
+/results/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go
+/vendor/
+*.test
+*.out
