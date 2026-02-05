@@ -140,6 +140,7 @@ type ScanConfig struct {
 	Download        bool
 	DownloadDir     string
 	MaxDownloadSize int64
+	MatchCounter    *int64 // Real-time match counter for progress bar
 }
 
 // ============================================================================
@@ -352,6 +353,11 @@ func scanShare(ctx context.Context, session *smb2.Session, host, shareName strin
 				Modified: modTime,
 			}
 			matches = append(matches, match)
+
+			// Update real-time match counter
+			if config.MatchCounter != nil {
+				atomic.AddInt64(config.MatchCounter, 1)
+			}
 
 			if config.Verbose {
 				fmt.Printf("  [!] Found: \\\\%s\\%s\\%s\n", host, shareName, path)
@@ -663,7 +669,8 @@ func runScan(targets []string, config *ScanConfig) []ScanResult {
 	total := len(targets)
 	var done int64
 	var accessible int64
-	var totalMatches int64
+	var matchCounter int64
+	config.MatchCounter = &matchCounter // Set real-time counter
 
 	for _, target := range targets {
 		wg.Add(1)
@@ -682,7 +689,6 @@ func runScan(targets []string, config *ScanConfig) []ScanResult {
 			if result.Accessible {
 				atomic.AddInt64(&accessible, 1)
 			}
-			atomic.AddInt64(&totalMatches, int64(len(result.Matches)))
 
 			if !config.Verbose {
 				// Clear line and print progress
@@ -691,7 +697,7 @@ func runScan(targets []string, config *ScanConfig) []ScanResult {
 				fmt.Printf("\r\033[K[%s] %5.1f%% (%d/%d) | Accessible: %d | Matches: %d",
 					bar, pct, current, total,
 					atomic.LoadInt64(&accessible),
-					atomic.LoadInt64(&totalMatches))
+					atomic.LoadInt64(&matchCounter))
 			}
 			mu.Unlock()
 		}(target)
