@@ -2,7 +2,9 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
@@ -16,9 +18,11 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/hirochachacha/go-smb2"
 	"github.com/spf13/cobra"
+	"golang.org/x/text/encoding/charmap"
 )
 
 // ============================================================================
@@ -226,7 +230,111 @@ func uniqueFilePath(path string) string {
 	return path
 }
 
-// downloadFile downloads a file from SMB share with buffered I/O
+// ============================================================================
+// Encoding Detection and Conversion
+// ============================================================================
+
+// textFileExtensions contains extensions that should be converted to UTF-8
+var textFileExtensions = map[string]bool{
+	".txt": true, ".ini": true, ".config": true, ".xml": true,
+	".env": true, ".log": true, ".cfg": true, ".conf": true,
+	".json": true, ".yml": true, ".yaml": true, ".md": true,
+	".bat": true, ".ps1": true, ".vbs": true, ".cmd": true,
+}
+
+// isTextFile checks if file should be converted to UTF-8
+func isTextFile(filename string) bool {
+	ext := strings.ToLower(filepath.Ext(filename))
+	return textFileExtensions[ext]
+}
+
+// detectAndConvertToUTF8 detects encoding and converts to UTF-8
+func detectAndConvertToUTF8(data []byte) []byte {
+	if len(data) == 0 {
+		return data
+	}
+
+	// Check for UTF-8 BOM
+	if len(data) >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF {
+		return data[3:] // Already UTF-8, strip BOM
+	}
+
+	// Check for UTF-16 LE BOM (FF FE)
+	if len(data) >= 2 && data[0] == 0xFF && data[1] == 0xFE {
+		return decodeUTF16LE(data[2:])
+	}
+
+	// Check for UTF-16 BE BOM (FE FF)
+	if len(data) >= 2 && data[0] == 0xFE && data[1] == 0xFF {
+		return decodeUTF16BE(data[2:])
+	}
+
+	// Check if already valid UTF-8
+	if utf8.Valid(data) {
+		return data
+	}
+
+	// Try Windows-1251 (Cyrillic)
+	if looksLikeWindows1251(data) {
+		return decodeWindows1251(data)
+	}
+
+	// Return as-is if can't detect
+	return data
+}
+
+// decodeUTF16LE converts UTF-16 Little Endian to UTF-8
+func decodeUTF16LE(data []byte) []byte {
+	if len(data)%2 != 0 {
+		data = data[:len(data)-1]
+	}
+
+	var buf bytes.Buffer
+	for i := 0; i < len(data); i += 2 {
+		r := rune(binary.LittleEndian.Uint16(data[i:]))
+		buf.WriteRune(r)
+	}
+	return buf.Bytes()
+}
+
+// decodeUTF16BE converts UTF-16 Big Endian to UTF-8
+func decodeUTF16BE(data []byte) []byte {
+	if len(data)%2 != 0 {
+		data = data[:len(data)-1]
+	}
+
+	var buf bytes.Buffer
+	for i := 0; i < len(data); i += 2 {
+		r := rune(binary.BigEndian.Uint16(data[i:]))
+		buf.WriteRune(r)
+	}
+	return buf.Bytes()
+}
+
+// decodeWindows1251 converts Windows-1251 (Cyrillic) to UTF-8
+func decodeWindows1251(data []byte) []byte {
+	decoder := charmap.Windows1251.NewDecoder()
+	result, err := decoder.Bytes(data)
+	if err != nil {
+		return data
+	}
+	return result
+}
+
+// looksLikeWindows1251 heuristically checks if data looks like Windows-1251
+func looksLikeWindows1251(data []byte) bool {
+	// Count bytes in Windows-1251 Cyrillic range (0xC0-0xFF)
+	cyrillicCount := 0
+	for _, b := range data {
+		if b >= 0xC0 && b <= 0xFF {
+			cyrillicCount++
+		}
+	}
+	// If more than 10% of bytes are in Cyrillic range, likely Windows-1251
+	return len(data) > 0 && float64(cyrillicCount)/float64(len(data)) > 0.1
+}
+
+// downloadFile downloads a file from SMB share with buffered I/O and UTF-8 conversion
 func downloadFile(shareFS *smb2.Share, remotePath, localPath string, maxSize int64) error {
 	remoteFile, err := shareFS.Open(remotePath)
 	if err != nil {
@@ -246,17 +354,29 @@ func downloadFile(shareFS *smb2.Share, remotePath, localPath string, maxSize int
 		return fmt.Errorf("mkdir: %w", err)
 	}
 
+	// Read file into memory
+	data, err := io.ReadAll(remoteFile)
+	if err != nil {
+		return fmt.Errorf("read: %w", err)
+	}
+
+	// Convert text files to UTF-8
+	filename := filepath.Base(localPath)
+	if isTextFile(filename) {
+		data = detectAndConvertToUTF8(data)
+	}
+
+	// Write to local file
 	localFile, err := os.Create(localPath)
 	if err != nil {
 		return fmt.Errorf("create: %w", err)
 	}
 	defer localFile.Close()
 
-	// Buffered writer for better performance
 	bufWriter := bufio.NewWriterSize(localFile, 64*1024)
-	_, err = io.Copy(bufWriter, remoteFile)
+	_, err = bufWriter.Write(data)
 	if err != nil {
-		return fmt.Errorf("copy: %w", err)
+		return fmt.Errorf("write: %w", err)
 	}
 	return bufWriter.Flush()
 }

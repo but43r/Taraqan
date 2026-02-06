@@ -1,10 +1,11 @@
 module share_scanner
 
-go 1.21
+go 1.24.0
 
 require (
 	github.com/hirochachacha/go-smb2 v1.1.0
 	github.com/spf13/cobra v1.8.0
+	golang.org/x/text v0.33.0
 )
 
 require (
