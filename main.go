@@ -626,7 +626,7 @@ func scanHost(host string, config *ScanConfig) ScanResult {
 		if upperShare == "IPC$" || upperShare == "PRINT$" {
 			continue
 		}
-		if config.SkipAdminShare && strings.HasSuffix(upperShare, "$") {
+		if config.SkipAdminShare && upperShare == "ADMIN$" {
 			continue
 		}
 		result.Shares = append(result.Shares, share)
