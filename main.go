@@ -874,17 +874,18 @@ func main() {
 
 	rootCmd := &cobra.Command{
 		Use:   "taraqan",
-		Short: "Taraqan - SMB Share Scanner with Pass-the-Hash",
-		Long: `Taraqan - SMB Share Scanner for penetration testing.
-Scans SMB shares across subnets for sensitive files using PTH authentication.`,
-		Example: `  # Scan subnet with PTH (NT hash)
+		Short: "Taraqan - SMB Credential & Secret Hunter",
+		Long: `Taraqan hunts for credentials and sensitive files across Windows networks.
+Authenticates via Pass-the-Hash or password, crawls SMB shares, and finds
+secrets matching configurable patterns. Supports SOCKS5 proxying and auto-download.`,
+		Example: `  # Hunt secrets with PTH
   taraqan -t 192.168.1.0/24 -u admin -d CORP -H 31d6cfe0d16ae931b73c59d7e0c089c0
 
-  # Scan with password, skip admin shares
-  taraqan -t 10.0.0.10 -u admin -d DOMAIN -p "Password123" --skip-admin
+  # Custom patterns + download
+  taraqan -t 10.0.0.0/24 -u admin -H hash --patterns "*учетк*,*пароль*,*.kdbx" --download
 
-  # Download matched files
-  taraqan -t 10.0.0.0/24 -u admin -H hash --patterns "*.kdbx,*пароль*" --download`,
+  # Through SOCKS5 proxy
+  taraqan -t 10.0.0.0/24 -u admin -H hash --socks5 127.0.0.1:1080 -v`,
 		Run: func(cmd *cobra.Command, args []string) {
 			target, _ := cmd.Flags().GetString("target")
 			if target == "" {
@@ -985,9 +986,13 @@ Scans SMB shares across subnets for sensitive files using PTH authentication.`,
 
 			// Print banner
 			fmt.Println(`
-╔═══════════════════════════════════════════════════════════════╗
-║                   Taraqan SMB Share Scanner                   ║
-╚═══════════════════════════════════════════════════════════════╝`)
+  ████████╗ █████╗ ██████╗  █████╗  ██████╗  █████╗ ███╗   ██╗
+  ╚══██╔══╝██╔══██╗██╔══██╗██╔══██╗██╔═══██╗██╔══██╗████╗  ██║
+     ██║   ███████║██████╔╝███████║██║   ██║███████║██╔██╗ ██║
+     ██║   ██╔══██║██╔══██╗██╔══██║██║▄▄ ██║██╔══██║██║╚██╗██║
+     ██║   ██║  ██║██║  ██║██║  ██║╚██████╔╝██║  ██║██║ ╚████║
+     ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚══▀▀═╝ ╚═╝  ╚═╝╚═╝  ╚═══╝
+                  SMB Credential & Secret Hunter`)
 			fmt.Printf("\n[*] Target:        %s (%d hosts)\n", target, len(targets))
 			fmt.Printf("[*] User:          %s\\%s\n", config.Domain, config.Username)
 			fmt.Printf("[*] Auth:          %s\n", func() string {
