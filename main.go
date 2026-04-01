@@ -207,16 +207,43 @@ func shouldExcludeByExt(filename string, excludeExt map[string]bool) bool {
 // SMB Scanner
 // ============================================================================
 
-func checkPort(host string, port int, timeout time.Duration, proxyDialer proxy.Dialer) bool {
-	addr := fmt.Sprintf("%s:%d", host, port)
-	var conn net.Conn
-	var err error
-
+// dialWithTimeout dials through proxy or directly with timeout
+func dialWithTimeout(network, addr string, timeout time.Duration, proxyDialer proxy.Dialer) (net.Conn, error) {
 	if proxyDialer != nil {
-		conn, err = proxyDialer.Dial("tcp", addr)
-	} else {
-		conn, err = net.DialTimeout("tcp", addr, timeout)
+		// Use DialContext if available for timeout support
+		if ctxDialer, ok := proxyDialer.(proxy.ContextDialer); ok {
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			defer cancel()
+			return ctxDialer.DialContext(ctx, network, addr)
+		}
+		// Fallback: dial with goroutine timeout
+		type result struct {
+			conn net.Conn
+			err  error
+		}
+		ch := make(chan result, 1)
+		go func() {
+			c, e := proxyDialer.Dial(network, addr)
+			ch <- result{c, e}
+		}()
+		select {
+		case r := <-ch:
+			return r.conn, r.err
+		case <-time.After(timeout):
+			// Clean up: close connection if goroutine completes later
+			go func() {
+				if r := <-ch; r.conn != nil {
+					r.conn.Close()
+				}
+			}()
+			return nil, fmt.Errorf("proxy dial timeout after %s", timeout)
+		}
 	}
+	return net.DialTimeout(network, addr, timeout)
+}
+
+func checkPort(host string, port int, timeout time.Duration, proxyDialer proxy.Dialer) bool {
+	conn, err := dialWithTimeout("tcp", fmt.Sprintf("%s:%d", host, port), timeout, proxyDialer)
 	if err != nil {
 		return false
 	}
@@ -400,14 +427,14 @@ func scanShare(ctx context.Context, session *smb2.Session, host, shareName strin
 	shareFS, err := session.Mount(shareName)
 	if err != nil {
 		if config.Verbose {
-			fmt.Printf("  [-] %s: %v\n", shareName, err)
+			fmt.Printf("\r\033[K  [-] %s: %v\n", shareName, err)
 		}
 		return matches
 	}
 	defer shareFS.Umount()
 
 	if config.Verbose {
-		fmt.Printf("  [*] Scanning %s...\n", shareName)
+		fmt.Printf("\r\033[K  [*] Scanning %s...\n", shareName)
 	}
 
 	dirFS := shareFS.DirFS(".")
@@ -460,7 +487,7 @@ func scanShare(ctx context.Context, session *smb2.Session, host, shareName strin
 		if config.Verbose && count%5000 == 0 {
 			elapsed := time.Since(startTime).Seconds()
 			rate := float64(count) / elapsed
-			fmt.Printf("  [*] %s: %d files (%.0f/s)...\n", shareName, count, rate)
+			fmt.Printf("\r\033[K  [*] %s: %d files (%.0f/s)...\n", shareName, count, rate)
 		}
 
 		// Pattern matching with pre-lowercased patterns
@@ -492,7 +519,7 @@ func scanShare(ctx context.Context, session *smb2.Session, host, shareName strin
 			}
 
 			if config.Verbose {
-				fmt.Printf("  [!] Found: \\\\%s\\%s\\%s\n", host, shareName, path)
+				fmt.Printf("\r\033[K  [!] Found: \\\\%s\\%s\\%s\n", host, shareName, path)
 			}
 
 			// Download file if enabled
@@ -501,10 +528,10 @@ func scanShare(ctx context.Context, session *smb2.Session, host, shareName strin
 				dlErr := downloadFile(shareFS, path, localPath, config.MaxDownloadSize)
 				if dlErr != nil {
 					if config.Verbose {
-						fmt.Printf("  [-] Download failed: %v\n", dlErr)
+						fmt.Printf("\r\033[K  [-] Download failed: %v\n", dlErr)
 					}
 				} else if config.Verbose {
-					fmt.Printf("  [↓] Downloaded: %s\n", localPath)
+					fmt.Printf("\r\033[K  [↓] Downloaded: %s\n", localPath)
 				}
 			}
 		}
@@ -514,16 +541,16 @@ func scanShare(ctx context.Context, session *smb2.Session, host, shareName strin
 	if err != nil {
 		if err == context.DeadlineExceeded {
 			if config.Verbose {
-				fmt.Printf("  [!] %s: timeout after %d files\n", shareName, atomic.LoadInt64(&filesScanned))
+				fmt.Printf("\r\033[K  [!] %s: timeout after %d files\n", shareName, atomic.LoadInt64(&filesScanned))
 			}
 		} else if config.Verbose {
-			fmt.Printf("  [-] Walk error on %s: %v\n", shareName, err)
+			fmt.Printf("\r\033[K  [-] Walk error on %s: %v\n", shareName, err)
 		}
 	}
 
 	if config.Verbose {
 		elapsed := time.Since(startTime).Seconds()
-		fmt.Printf("  [+] %s: done (%d files in %.1fs)\n", shareName, atomic.LoadInt64(&filesScanned), elapsed)
+		fmt.Printf("\r\033[K  [+] %s: done (%d files in %.1fs)\n", shareName, atomic.LoadInt64(&filesScanned), elapsed)
 	}
 
 	return matches
@@ -536,22 +563,15 @@ func scanHost(host string, config *ScanConfig) ScanResult {
 		Matches: make([]FileMatch, 0, 16),
 	}
 
-	// Quick port check
-	if !checkPort(host, 445, config.Timeout, config.ProxyDialer) {
+	// Quick port check (skip for proxy — dialWithTimeout handles it)
+	if config.ProxyDialer == nil && !checkPort(host, 445, config.Timeout, nil) {
 		result.Error = "port 445 closed"
 		return result
 	}
 
 	// Connect with timeout (via SOCKS5 proxy if configured)
-	var conn net.Conn
-	var err error
 	addr := fmt.Sprintf("%s:445", host)
-	if config.ProxyDialer != nil {
-		conn, err = config.ProxyDialer.Dial("tcp", addr)
-	} else {
-		dialer := net.Dialer{Timeout: config.Timeout}
-		conn, err = dialer.Dial("tcp", addr)
-	}
+	conn, err := dialWithTimeout("tcp", addr, config.Timeout, config.ProxyDialer)
 	if err != nil {
 		result.Error = fmt.Sprintf("connection failed: %v", err)
 		return result
@@ -613,7 +633,7 @@ func scanHost(host string, config *ScanConfig) ScanResult {
 	}
 
 	if config.Verbose {
-		fmt.Printf("[+] %s - Shares: %s\n", host, strings.Join(result.Shares, ", "))
+		fmt.Printf("\r\033[K[+] %s - Shares: %s\n", host, strings.Join(result.Shares, ", "))
 	}
 
 	// Scan shares in parallel
@@ -829,24 +849,20 @@ func runScan(targets []string, config *ScanConfig) []ScanResult {
 				atomic.AddInt64(&accessible, 1)
 			}
 
-			if !config.Verbose {
-				// Clear line and print progress
-				pct := float64(current) / float64(total) * 100
-				bar := progressBar(int(pct), 20)
-				fmt.Printf("\r\033[K[%s] %5.1f%% (%d/%d) | Accessible: %d | Matches: %d",
-					bar, pct, current, total,
-					atomic.LoadInt64(&accessible),
-					atomic.LoadInt64(&matchCounter))
-			}
+			// Always show progress bar on single line
+			pct := float64(current) / float64(total) * 100
+			bar := progressBar(int(pct), 20)
+			fmt.Printf("\r\033[K[%s] %5.1f%% (%d/%d) | Hosts: %d | Matches: %d",
+				bar, pct, current, total,
+				atomic.LoadInt64(&accessible),
+				atomic.LoadInt64(&matchCounter))
+
 			mu.Unlock()
 		}(target)
 	}
 
 	wg.Wait()
-
-	if !config.Verbose {
-		fmt.Println()
-	}
+	fmt.Println()
 
 	return results
 }
