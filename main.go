@@ -420,18 +420,51 @@ func downloadFile(shareFS *smb2.Share, remotePath, localPath string, maxSize int
 	return bufWriter.Flush()
 }
 
+// mountWithTimeout mounts a share with timeout protection
+func mountWithTimeout(session *smb2.Session, shareName string, timeout time.Duration) (*smb2.Share, error) {
+	type mountResult struct {
+		share *smb2.Share
+		err   error
+	}
+	ch := make(chan mountResult, 1)
+	go func() {
+		s, e := session.Mount(shareName)
+		ch <- mountResult{s, e}
+	}()
+	select {
+	case r := <-ch:
+		return r.share, r.err
+	case <-time.After(timeout):
+		return nil, fmt.Errorf("mount timeout after %s", timeout)
+	}
+}
+
+// umountWithTimeout unmounts a share without blocking forever
+func umountWithTimeout(shareFS *smb2.Share) {
+	done := make(chan struct{})
+	go func() {
+		shareFS.Umount()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+	}
+}
+
 // scanShare scans a single share with timeout
 func scanShare(ctx context.Context, session *smb2.Session, host, shareName string, config *ScanConfig) []FileMatch {
 	matches := make([]FileMatch, 0, 16) // Pre-allocate with expected capacity
 
-	shareFS, err := session.Mount(shareName)
+	// Mount with timeout protection
+	shareFS, err := mountWithTimeout(session, shareName, 30*time.Second)
 	if err != nil {
 		if config.Verbose {
 			fmt.Printf("\r\033[K  [-] %s: %v\n", shareName, err)
 		}
 		return matches
 	}
-	defer shareFS.Umount()
+	defer umountWithTimeout(shareFS)
 
 	if config.Verbose {
 		fmt.Printf("\r\033[K  [*] Scanning %s...\n", shareName)
@@ -441,11 +474,8 @@ func scanShare(ctx context.Context, session *smb2.Session, host, shareName strin
 	var filesScanned int64
 	startTime := time.Now()
 
-	// Pre-compute depth separator
-	pathSep := string(os.PathSeparator)
-
 	err = fs.WalkDir(dirFS, ".", func(path string, d fs.DirEntry, err error) error {
-		// Check context cancellation (timeout) - check less frequently
+		// Check context cancellation (timeout)
 		if filesScanned%100 == 0 {
 			select {
 			case <-ctx.Done():
@@ -458,8 +488,8 @@ func scanShare(ctx context.Context, session *smb2.Session, host, shareName strin
 			return nil
 		}
 
-		// Check depth - optimized counting
-		currentDepth := strings.Count(path, pathSep) + strings.Count(path, "/")
+		// Check depth
+		currentDepth := strings.Count(path, "/")
 		if currentDepth > config.MaxDepth {
 			if d.IsDir() {
 				return fs.SkipDir
@@ -482,12 +512,11 @@ func scanShare(ctx context.Context, session *smb2.Session, host, shareName strin
 			return nil
 		}
 
-		atomic.AddInt64(&filesScanned, 1)
-		count := atomic.LoadInt64(&filesScanned)
-		if config.Verbose && count%5000 == 0 {
+		filesScanned++
+		if config.Verbose && filesScanned%5000 == 0 {
 			elapsed := time.Since(startTime).Seconds()
-			rate := float64(count) / elapsed
-			fmt.Printf("\r\033[K  [*] %s: %d files (%.0f/s)...\n", shareName, count, rate)
+			rate := float64(filesScanned) / elapsed
+			fmt.Printf("\r\033[K  [*] %s: %d files (%.0f/s)...\n", shareName, filesScanned, rate)
 		}
 
 		// Pattern matching with pre-lowercased patterns
@@ -541,7 +570,7 @@ func scanShare(ctx context.Context, session *smb2.Session, host, shareName strin
 	if err != nil {
 		if err == context.DeadlineExceeded {
 			if config.Verbose {
-				fmt.Printf("\r\033[K  [!] %s: timeout after %d files\n", shareName, atomic.LoadInt64(&filesScanned))
+				fmt.Printf("\r\033[K  [!] %s: timeout after %d files\n", shareName, filesScanned)
 			}
 		} else if config.Verbose {
 			fmt.Printf("\r\033[K  [-] Walk error on %s: %v\n", shareName, err)
@@ -550,7 +579,7 @@ func scanShare(ctx context.Context, session *smb2.Session, host, shareName strin
 
 	if config.Verbose {
 		elapsed := time.Since(startTime).Seconds()
-		fmt.Printf("\r\033[K  [+] %s: done (%d files in %.1fs)\n", shareName, atomic.LoadInt64(&filesScanned), elapsed)
+		fmt.Printf("\r\033[K  [+] %s: done (%d files in %.1fs)\n", shareName, filesScanned, elapsed)
 	}
 
 	return matches
@@ -576,7 +605,6 @@ func scanHost(host string, config *ScanConfig) ScanResult {
 		result.Error = fmt.Sprintf("connection failed: %v", err)
 		return result
 	}
-	defer conn.Close()
 
 	// Create NTLM initiator
 	var initiator smb2.Initiator
@@ -584,6 +612,7 @@ func scanHost(host string, config *ScanConfig) ScanResult {
 	if config.NTHash != "" {
 		hashBytes, err := hex.DecodeString(config.NTHash)
 		if err != nil {
+			conn.Close()
 			result.Error = fmt.Sprintf("invalid NT hash: %v", err)
 			return result
 		}
@@ -606,16 +635,35 @@ func scanHost(host string, config *ScanConfig) ScanResult {
 
 	session, err := d.Dial(conn)
 	if err != nil {
+		conn.Close()
 		result.Error = fmt.Sprintf("auth failed: %v", err)
 		return result
 	}
-	defer session.Logoff()
+
+	// Cleanup function that won't block forever
+	cleanup := func() {
+		// Set a short deadline to force all pending I/O to fail
+		conn.SetDeadline(time.Now().Add(5 * time.Second))
+		done := make(chan struct{})
+		go func() {
+			session.Logoff()
+			conn.Close()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			// Force-close the connection to unblock Logoff
+			conn.Close()
+		}
+	}
 
 	result.Accessible = true
 
 	// List shares
 	shares, err := session.ListSharenames()
 	if err != nil {
+		cleanup()
 		result.Error = fmt.Sprintf("list shares failed: %v", err)
 		return result
 	}
@@ -661,6 +709,7 @@ func scanHost(host string, config *ScanConfig) ScanResult {
 	}
 
 	wg.Wait()
+	cleanup()
 	return result
 }
 
@@ -693,10 +742,6 @@ func expandCIDR(cidr string) ([]string, error) {
 			}
 		}
 		hosts = append(hosts, ip.String())
-	}
-
-	if len(hosts) > 2 {
-		hosts = hosts[1 : len(hosts)-1]
 	}
 
 	return hosts, nil
@@ -831,6 +876,10 @@ func runScan(targets []string, config *ScanConfig) []ScanResult {
 	var matchCounter int64
 	config.MatchCounter = &matchCounter // Set real-time counter
 
+	// Calculate per-host hard timeout: enough for all shares + connection overhead
+	// ShareTimeout * worst-case shares + connection + logoff grace
+	hostHardTimeout := config.ShareTimeout*3 + config.Timeout*2 + 30*time.Second
+
 	for _, target := range targets {
 		wg.Add(1)
 		sem <- struct{}{}
@@ -839,7 +888,30 @@ func runScan(targets []string, config *ScanConfig) []ScanResult {
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			result := scanHost(t, config)
+			// Run scanHost with a hard deadline
+			type hostResult struct {
+				result ScanResult
+			}
+			ch := make(chan hostResult, 1)
+			go func() {
+				ch <- hostResult{result: scanHost(t, config)}
+			}()
+
+			var result ScanResult
+			select {
+			case hr := <-ch:
+				result = hr.result
+			case <-time.After(hostHardTimeout):
+				result = ScanResult{
+					Host:  t,
+					Error: fmt.Sprintf("host timeout after %s", hostHardTimeout),
+				}
+				if config.Verbose {
+					fmt.Printf("\r\033[K[!] %s: hard timeout, moving on\n", t)
+				}
+				// Leaked goroutine will eventually terminate due to
+				// conn.SetDeadline in cleanup() forcing I/O errors
+			}
 
 			mu.Lock()
 			results = append(results, result)
