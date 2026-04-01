@@ -12,6 +12,7 @@ import (
 	"io"
 	"io/fs"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/hirochachacha/go-smb2"
 	"github.com/spf13/cobra"
+	"golang.org/x/net/proxy"
 	"golang.org/x/text/encoding/charmap"
 )
 
@@ -145,6 +147,8 @@ type ScanConfig struct {
 	DownloadDir     string
 	MaxDownloadSize int64
 	MatchCounter    *int64 // Real-time match counter for progress bar
+	Socks5Proxy     string // SOCKS5 proxy address (e.g., 127.0.0.1:1080)
+	ProxyDialer     proxy.Dialer // Resolved proxy dialer
 }
 
 // ============================================================================
@@ -203,8 +207,16 @@ func shouldExcludeByExt(filename string, excludeExt map[string]bool) bool {
 // SMB Scanner
 // ============================================================================
 
-func checkPort(host string, port int, timeout time.Duration) bool {
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", host, port), timeout)
+func checkPort(host string, port int, timeout time.Duration, proxyDialer proxy.Dialer) bool {
+	addr := fmt.Sprintf("%s:%d", host, port)
+	var conn net.Conn
+	var err error
+
+	if proxyDialer != nil {
+		conn, err = proxyDialer.Dial("tcp", addr)
+	} else {
+		conn, err = net.DialTimeout("tcp", addr, timeout)
+	}
 	if err != nil {
 		return false
 	}
@@ -525,14 +537,21 @@ func scanHost(host string, config *ScanConfig) ScanResult {
 	}
 
 	// Quick port check
-	if !checkPort(host, 445, config.Timeout) {
+	if !checkPort(host, 445, config.Timeout, config.ProxyDialer) {
 		result.Error = "port 445 closed"
 		return result
 	}
 
-	// Connect with timeout
-	dialer := net.Dialer{Timeout: config.Timeout}
-	conn, err := dialer.Dial("tcp", fmt.Sprintf("%s:445", host))
+	// Connect with timeout (via SOCKS5 proxy if configured)
+	var conn net.Conn
+	var err error
+	addr := fmt.Sprintf("%s:445", host)
+	if config.ProxyDialer != nil {
+		conn, err = config.ProxyDialer.Dial("tcp", addr)
+	} else {
+		dialer := net.Dialer{Timeout: config.Timeout}
+		conn, err = dialer.Dial("tcp", addr)
+	}
 	if err != nil {
 		result.Error = fmt.Sprintf("connection failed: %v", err)
 		return result
@@ -934,6 +953,36 @@ Scans SMB shares across subnets for sensitive files using PTH authentication.`,
 			// Convert MB to bytes
 			config.MaxDownloadSize = maxDownloadSizeMB * 1024 * 1024
 
+			// Initialize SOCKS5 proxy if configured
+			if config.Socks5Proxy != "" {
+				proxyAddr := config.Socks5Proxy
+				var auth *proxy.Auth
+
+				// Parse user:pass@host:port format
+				if strings.Contains(proxyAddr, "@") {
+					proxyURL, err := url.Parse("socks5://" + proxyAddr)
+					if err != nil {
+						fmt.Printf("Error parsing proxy address: %v\n", err)
+						os.Exit(1)
+					}
+					proxyAddr = proxyURL.Host
+					if proxyURL.User != nil {
+						pass, _ := proxyURL.User.Password()
+						auth = &proxy.Auth{
+							User:     proxyURL.User.Username(),
+							Password: pass,
+						}
+					}
+				}
+
+				dialer, err := proxy.SOCKS5("tcp", proxyAddr, auth, &net.Dialer{Timeout: config.Timeout})
+				if err != nil {
+					fmt.Printf("Error creating SOCKS5 proxy: %v\n", err)
+					os.Exit(1)
+				}
+				config.ProxyDialer = dialer
+			}
+
 			// Print banner
 			fmt.Println(`
 ╔═══════════════════════════════════════════════════════════════╗
@@ -952,6 +1001,9 @@ Scans SMB shares across subnets for sensitive files using PTH authentication.`,
 			fmt.Printf("[*] Share threads: %d\n", config.ShareThreads)
 			fmt.Printf("[*] Share timeout: %s\n", config.ShareTimeout)
 			fmt.Printf("[*] Depth:         %d\n", config.MaxDepth)
+			if config.Socks5Proxy != "" {
+				fmt.Printf("[*] Proxy:         %s\n", config.Socks5Proxy)
+			}
 			if config.SkipAdminShare {
 				fmt.Printf("[*] Skip admin$:   yes\n")
 			}
@@ -1007,6 +1059,7 @@ Scans SMB shares across subnets for sensitive files using PTH authentication.`,
 	rootCmd.Flags().BoolVar(&config.Download, "download", false, "Download matched files")
 	rootCmd.Flags().StringVar(&config.DownloadDir, "download-dir", "./loot", "Directory for downloads")
 	rootCmd.Flags().Int64Var(&maxDownloadSizeMB, "max-size", 10, "Max file size to download in MB")
+	rootCmd.Flags().StringVar(&config.Socks5Proxy, "socks5", "", "SOCKS5 proxy address (e.g., 127.0.0.1:1080 or user:pass@host:port)")
 
 	rootCmd.MarkFlagRequired("target")
 	rootCmd.MarkFlagRequired("username")
